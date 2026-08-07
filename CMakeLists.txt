@@ -5,7 +5,9 @@ project(PlotterCom)
 add_executable(PlotterCom
               src/main.c
               src/communication/message.c
-              src/communication/message_queue.c)
+              src/communication/message_queue.c
+              src/communication/server.c
+              src/communication/client.c)
 
 target_include_directories(PlotterCom
             PRIVATE
