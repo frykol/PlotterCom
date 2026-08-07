@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "communication/message.h"
 #include "communication/message_queue.h"
 #include "communication/server.h"
 
@@ -26,6 +27,13 @@ void test_shell(){
       }
       size_t num = message_queue_element_count(msg);
       printf("MESSAGES IN: %d client -> %zu\n", test_idx, num);
+      printf("CLIENT MESSAGES\n");
+      message_t* message;
+      while (!message_queue_try_pop(msg, &message)){
+          const char* data = message_data(message);
+          printf("%s\n", data);
+          free_message(message);
+      }
     }
   }
 
