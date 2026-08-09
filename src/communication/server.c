@@ -80,15 +80,20 @@ void *server_listen(void *arg) {
 
   while (1) {
     pthread_mutex_lock(&ctx->server_mutex);
+
     size_t current_clients = ctx->active_clients;
     bool shutdown = ctx->shutdown;
-    pthread_mutex_unlock(&ctx->server_mutex);
     if (shutdown) {
+      pthread_mutex_unlock(&ctx->server_mutex);
       break;
     }
+
     if (current_clients == MAX_CONNECTIONS) {
       pthread_cond_wait(&ctx->server_cond, &ctx->server_mutex);
     }
+
+    pthread_mutex_unlock(&ctx->server_mutex);
+
     struct sockaddr_in client_addr;
     int client_len = sizeof(client_addr);
     int client_sock =
@@ -118,7 +123,6 @@ void *server_listen(void *arg) {
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
       if (ctx->server_clients_occupied[i] == false) {
         free_index = i;
-        ctx->server_clients_occupied[i] = true;
         break;
       }
     }
@@ -167,6 +171,7 @@ void *server_listen(void *arg) {
     }
     pthread_mutex_lock(&ctx->server_mutex);
     ctx->active_clients++;
+    ctx->server_clients_occupied[free_index] = true;
     pthread_mutex_unlock(&ctx->server_mutex);
     ctx->clients_contexts[free_index] = client_ctx;
 
@@ -276,16 +281,26 @@ void send_client_message(int client_id, const char *message, size_t size) {
   if (message == NULL) {
     return;
   }
+  pthread_mutex_lock(&server_ctx.server_mutex);
   int target_client_id = find_client(client_id);
   if (target_client_id == -1) {
+    pthread_mutex_unlock(&server_ctx.server_mutex);
     return;
   }
   if (server_ctx.server_clients_occupied[target_client_id] == false) {
+    pthread_mutex_unlock(&server_ctx.server_mutex);
     return;
   }
+  pthread_mutex_t *client_mutex =
+      &server_ctx.clients_contexts[target_client_id]->client_mutex;
+  pthread_mutex_lock(client_mutex);
+  pthread_mutex_unlock(&server_ctx.server_mutex);
+
   message_t *message_from_server;
   create_message(&message_from_server, message, size);
   message_queue_t *server_message_queue =
       server_ctx.clients_contexts[target_client_id]->server_message_queue;
   message_queue_add(server_message_queue, message_from_server);
+
+  pthread_mutex_unlock(client_mutex);
 }

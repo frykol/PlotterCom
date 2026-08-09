@@ -57,7 +57,6 @@ int message_queue_add_unsafe(message_queue_t *msgq, message_t *msg) {
   size_t next_tail = (msgq->tail + 1) % (msgq->capacity + 1);
 
   if (next_tail == msgq->head) {
-    pthread_mutex_unlock(&msgq->mutex);
     return -1;
   }
 
@@ -151,7 +150,7 @@ size_t message_queue_element_count(message_queue_t *msgq) {
   } else if (msgq->head < msgq->tail) {
     count = msgq->tail - msgq->head;
   } else if (msgq->head > msgq->tail) {
-    count = msgq->capacity - msgq->head + msgq->tail;
+    count = msgq->capacity - msgq->head + msgq->tail + 1;
   }
   pthread_mutex_unlock(&msgq->mutex);
   return count;
