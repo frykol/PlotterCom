@@ -7,7 +7,7 @@ struct message {
 };
 
 // allocates memory; needs to be freed later
-int create_message(message_t **msg, char *buffer, size_t buffer_size) {
+int create_message(message_t **msg, const char *buffer, size_t buffer_size) {
   if (buffer == NULL) {
     return -1;
   }

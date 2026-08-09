@@ -5,4 +5,5 @@ typedef struct server_context server_context_t;
 
 int init_server();
 int stop_server();
-message_queue_t* get_client_message_queue(int client_id);
+message_queue_t *get_client_message_queue(int client_id);
+void send_client_message(int client_id, const char *message, size_t size);

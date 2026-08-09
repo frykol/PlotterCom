@@ -1,20 +1,23 @@
 #include "communication/server.h"
 
 #include <arpa/inet.h>
-#include <bits/pthreadtypes.h>
-#include <stdio.h>
-#include <unistd.h>
+#include <asm-generic/socket.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-#include "communication/message_queue.h"
 #include "communication/client.h"
+#include "communication/message.h"
+#include "communication/message_queue.h"
 
 #define MESSAGE_MAX_CHUNK 4096
 #define MESSAGE_QUEUE_SIZE 25
 #define MAX_CONNECTIONS 10
 
-struct server_context{
+struct server_context {
   int server_socket;
   pthread_t server_thread;
   pthread_mutex_t server_mutex;
@@ -23,7 +26,7 @@ struct server_context{
   bool server_clients_occupied[MAX_CONNECTIONS];
   size_t clients_id[MAX_CONNECTIONS];
 
-  client_context_t* clients_contexts[MAX_CONNECTIONS];
+  client_context_t *clients_contexts[MAX_CONNECTIONS];
 
   size_t active_clients;
   size_t client_counter;
@@ -31,18 +34,22 @@ struct server_context{
   bool shutdown;
 };
 
-server_context_t server_ctx = {
-  .server_mutex = PTHREAD_MUTEX_INITIALIZER,
-  .server_cond = PTHREAD_COND_INITIALIZER,
-  .client_counter = 0,
-  .started = false,
-  .shutdown = false
-};
+server_context_t server_ctx = {.server_mutex = PTHREAD_MUTEX_INITIALIZER,
+                               .server_cond = PTHREAD_COND_INITIALIZER,
+                               .client_counter = 0,
+                               .started = false,
+                               .shutdown = false};
 
 int create_server(struct sockaddr_in *server_addr, int *server_socket) {
   int result = 0;
 
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  int opt = 1;
+
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+    printf("Cannot setsockopt\n");
+    return -1;
+  }
 
   uint16_t port = 8080;
 
@@ -68,69 +75,84 @@ int create_server(struct sockaddr_in *server_addr, int *server_socket) {
   return result;
 }
 
+void *server_listen(void *arg) {
+  server_context_t *ctx = (server_context_t *)arg;
 
-void* server_listen(void* arg){
-  server_context_t* ctx = (server_context_t*)arg;
-
-  while(1){
+  while (1) {
     pthread_mutex_lock(&ctx->server_mutex);
     size_t current_clients = ctx->active_clients;
     bool shutdown = ctx->shutdown;
     pthread_mutex_unlock(&ctx->server_mutex);
-    if(shutdown){
+    if (shutdown) {
       break;
     }
-    if(current_clients == MAX_CONNECTIONS){
+    if (current_clients == MAX_CONNECTIONS) {
       pthread_cond_wait(&ctx->server_cond, &ctx->server_mutex);
     }
     struct sockaddr_in client_addr;
     int client_len = sizeof(client_addr);
-    int client_sock = accept(ctx->server_socket, (struct sockaddr *)&client_addr,
-                            (socklen_t *)&client_len);
+    int client_sock =
+        accept(ctx->server_socket, (struct sockaddr *)&client_addr,
+               (socklen_t *)&client_len);
 
     if (client_sock < 0) {
       printf("Error on accept\n");
+      if (errno == EBADF) {
+        printf("EBADF\n");
+      }
+      if (errno == EINVAL) {
+        printf("EINVAL\n");
+      }
+      if (errno == ENOTSOCK) {
+        printf("ENOTSOCK\n");
+      }
+      if (errno == EINTR) {
+        printf("EINTR\n");
+      }
       continue;
     }
 
     size_t client_number = 0;
     int free_index = -1;
     pthread_mutex_lock(&ctx->server_mutex);
-      for(int i = 0; i < MAX_CONNECTIONS; i++){
-        if(ctx->server_clients_occupied[i] == false){
-          free_index = i;
-          ctx->server_clients_occupied[i] = true;
-          break;
-        }
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+      if (ctx->server_clients_occupied[i] == false) {
+        free_index = i;
+        ctx->server_clients_occupied[i] = true;
+        break;
       }
+    }
     pthread_mutex_unlock(&ctx->server_mutex);
 
-    if(free_index == -1){
+    if (free_index == -1) {
       close(client_sock);
       continue;
     }
 
     ctx->clients_id[free_index] = ctx->client_counter;
 
-    message_queue_t* client_message_queue;
+    message_queue_t *client_message_queue;
     message_queue_init(&client_message_queue, MESSAGE_QUEUE_SIZE);
-    client_context_t* client_ctx = (client_context_t*)malloc(sizeof(client_context_t));
+    message_queue_t *server_message_queue;
+    message_queue_init(&server_message_queue, MESSAGE_QUEUE_SIZE);
+
+    client_context_t *client_ctx =
+        (client_context_t *)malloc(sizeof(client_context_t));
     client_ctx->mutex = &ctx->server_mutex;
     client_ctx->occupied = &ctx->server_clients_occupied[free_index];
     client_ctx->client_id = ctx->client_counter++;
     client_ctx->active_clients = &ctx->active_clients;
     client_ctx->client_fd = client_sock;
-    client_ctx->message_queue = client_message_queue;
+    client_ctx->client_message_queue = client_message_queue;
+    client_ctx->server_message_queue = server_message_queue;
     client_ctx->server_cond = &ctx->server_cond;
     client_ctx->shutdown = &ctx->shutdown;
     pthread_mutex_init(&client_ctx->client_mutex, NULL);
-    
+
     pthread_t client_thread;
-    int client_thread_res = pthread_create(&client_thread,
-                                          NULL, 
-                                          &client_handle_connection,
-                                          (void*)client_ctx);
-    if(client_thread_res != 0){
+    int client_thread_res = pthread_create(
+        &client_thread, NULL, &client_handle_connection, (void *)client_ctx);
+    if (client_thread_res != 0) {
       printf("Failed to create client\n");
 
       pthread_mutex_lock(&ctx->server_mutex);
@@ -153,25 +175,31 @@ void* server_listen(void* arg){
   printf("SHUTING DOWN\n");
   pthread_mutex_lock(&ctx->server_mutex);
 
-  while (ctx->active_clients > 0){
+  while (ctx->active_clients > 0) {
     pthread_cond_wait(&ctx->server_cond, &ctx->server_mutex);
   }
 
   pthread_mutex_unlock(&ctx->server_mutex);
+  close(server_ctx.server_socket);
 
-
-  return (void*)0;
+  return (void *)0;
 }
 
-int init_server(){
+int init_server() {
   struct sockaddr_in server_addr;
 
-  int server_fd = 0; 
+  int server_fd = 0;
   int server_result = create_server(&server_addr, &server_fd);
-  
+
+  if (server_result != 0) {
+    printf("Error creating server\n");
+    return -1;
+  }
+
   server_ctx.server_socket = server_fd;
 
-  int server_thread_res = pthread_create(&server_ctx.server_thread, NULL, &server_listen, (void*)&server_ctx);
+  int server_thread_res = pthread_create(&server_ctx.server_thread, NULL,
+                                         &server_listen, (void *)&server_ctx);
 
   if (server_thread_res != 0) {
     printf("Failed to create thread: %d\n", server_thread_res);
@@ -183,12 +211,11 @@ int init_server(){
   return 0;
 }
 
-int stop_server(){
+int stop_server() {
   pthread_mutex_lock(&server_ctx.server_mutex);
   server_ctx.shutdown = true;
   pthread_mutex_unlock(&server_ctx.server_mutex);
   shutdown(server_ctx.server_socket, SHUT_RDWR);
-  close(server_ctx.server_socket);
 
   int server_thread_res = pthread_join(server_ctx.server_thread, NULL);
   if (server_thread_res != 0) {
@@ -202,22 +229,63 @@ int stop_server(){
   return 0;
 }
 
-message_queue_t* get_client_message_queue(int client_id){
-  if (!server_ctx.started) {
-    return NULL;
-  }
+int find_client(int client_id) {
   int target_client_id = -1;
-  for(int i = 0; i < MAX_CONNECTIONS; i++){
-    if (server_ctx.clients_id[i] == client_id){
+  for (int i = 0; i < MAX_CONNECTIONS; i++) {
+    if (server_ctx.clients_id[i] == client_id) {
       target_client_id = i;
       break;
     }
   }
-  if (target_client_id == -1){
+  return target_client_id;
+}
+
+message_queue_t *get_client_message_queue(int client_id) {
+  if (!server_ctx.started) {
     return NULL;
   }
-  if (server_ctx.server_clients_occupied[target_client_id] == false){
+  pthread_mutex_t *client_mutex = NULL;
+  pthread_mutex_lock(&server_ctx.server_mutex);
+  int target_client_id = find_client(client_id);
+  if (target_client_id == -1) {
+    pthread_mutex_unlock(&server_ctx.server_mutex);
     return NULL;
   }
-  return server_ctx.clients_contexts[client_id]->message_queue;
+  if (server_ctx.server_clients_occupied[target_client_id] == false) {
+    pthread_mutex_unlock(&server_ctx.server_mutex);
+    return NULL;
+  }
+  client_mutex = &server_ctx.clients_contexts[target_client_id]->client_mutex;
+  pthread_mutex_lock(client_mutex);
+  pthread_mutex_unlock(&server_ctx.server_mutex);
+
+  message_queue_t *client_message_queue =
+      server_ctx.clients_contexts[target_client_id]->client_message_queue;
+
+  message_queue_t *to_move = NULL;
+
+  int move_result = message_queue_move_init(&to_move, client_message_queue);
+  if (move_result != 0) {
+    to_move = NULL;
+  }
+  pthread_mutex_unlock(client_mutex);
+  return to_move;
+}
+
+void send_client_message(int client_id, const char *message, size_t size) {
+  if (message == NULL) {
+    return;
+  }
+  int target_client_id = find_client(client_id);
+  if (target_client_id == -1) {
+    return;
+  }
+  if (server_ctx.server_clients_occupied[target_client_id] == false) {
+    return;
+  }
+  message_t *message_from_server;
+  create_message(&message_from_server, message, size);
+  message_queue_t *server_message_queue =
+      server_ctx.clients_contexts[target_client_id]->server_message_queue;
+  message_queue_add(server_message_queue, message_from_server);
 }
