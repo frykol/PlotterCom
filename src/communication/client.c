@@ -1,19 +1,23 @@
 #include "communication/client.h"
 
 #include <arpa/inet.h>
+#include <endian.h>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <inttypes.h>
 
 #include "communication/message.h"
 #include "communication/message_queue.h"
 
 #define MESSAGE_MAX_CHUNK 4096
+#define HEADER_MESSAGE_SIZE 8
 
 bool is_client_connected(int result) {
   if (result == 0) {
@@ -32,35 +36,44 @@ bool is_client_connected(int result) {
   return true;
 }
 
+void get_header_message_size(const void* buffer, size_t* buffer_size, uint64_t* header_message_size){
+  if (*header_message_size != 0){
+    return;
+  }
+
+  if (*buffer_size < HEADER_MESSAGE_SIZE){
+    return;
+  }
+
+  memcpy(header_message_size, buffer, sizeof(uint64_t));
+  *header_message_size = be64toh(*header_message_size); 
+}
 void save_message(client_context_t *client_ctx, int result, char *buffer,
-                  size_t *buffer_size) {
+                  size_t *buffer_size, uint64_t* header_message_size) {
+
+  const size_t offset = HEADER_MESSAGE_SIZE;
+
+  if(*buffer_size < HEADER_MESSAGE_SIZE){
+    return;
+  }
   size_t characters_len = result / sizeof(char);
   printf("Arrived: %d bytes -> %zu characters\n", result, characters_len);
-  *buffer_size += result / sizeof(char);
 
-  if (buffer[*buffer_size - 1] == '\0') {
+  if (*buffer_size >= *header_message_size + offset) {
     printf("Data avalible, characters len:%zu\n", characters_len);
     printf("%s\n\n", buffer);
 
+
     message_t *message;
     int message_result =
-        create_message(&message, buffer, *buffer_size * sizeof(char));
+        create_message(&message, (void*)buffer + offset, *buffer_size-offset);
 
     if (message_result != 0) {
       printf("Error creating message\n");
     }
 
-    /*
-    printf("GETTING DATA\n");
-    const char *data = message_data(message);
-    printf("TEST PRINTF MESSAGE\n");
-    printf("%s\n", data);
-    printf("MESSAGE SIZE: %zu\n", message_size(message));
-    printf("END PRINTF MESSAGE\n\n");
-    */
-
-    memset(buffer, '0', MESSAGE_MAX_CHUNK);
     *buffer_size = 0;
+    *header_message_size = 0;
     message_queue_add(client_ctx->client_message_queue, message);
   }
 }
@@ -77,6 +90,8 @@ void *client_handle_connection(void *client_context) {
 
   char test_buffer[MESSAGE_MAX_CHUNK];
   size_t buffer_size = 0;
+
+  uint64_t header_message_size = 0;
   while (1) {
     pthread_mutex_lock(client_ctx->mutex);
     bool shutdown = *client_ctx->shutdown;
@@ -88,7 +103,7 @@ void *client_handle_connection(void *client_context) {
     message_t *server_message;
     while (!message_queue_try_pop(client_ctx->server_message_queue,
                                   &server_message)) {
-      const char *data = message_data(server_message);
+      const char *data = (char*)message_data(server_message);
       size_t data_len = message_size(server_message);
       send(client_ctx->client_fd, (void *)data, data_len, 0);
       free_message(server_message);
@@ -107,13 +122,15 @@ void *client_handle_connection(void *client_context) {
       int result =
           recv(client_ctx->client_fd, &test_buffer[buffer_size],
                MESSAGE_MAX_CHUNK - (buffer_size * sizeof(char)) - 1, 0);
+      buffer_size += result;
 
       if (!is_client_connected(result)) {
         break;
       }
 
       if (result > 0) {
-        save_message(client_ctx, result, test_buffer, &buffer_size);
+        get_header_message_size(test_buffer, &buffer_size,  &header_message_size);
+        save_message(client_ctx, result, test_buffer, &buffer_size, &header_message_size);
       }
     }
     if (fd.revents & (POLLHUP)) {

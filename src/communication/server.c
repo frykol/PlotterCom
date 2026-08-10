@@ -304,3 +304,20 @@ void send_client_message(int client_id, const char *message, size_t size) {
 
   pthread_mutex_unlock(client_mutex);
 }
+
+//memory unsafe for now (quick testing)
+size_t get_active_connections_list(size_t* id_list){
+  if(id_list == NULL){
+    return 0;
+  }
+  pthread_mutex_lock(&server_ctx.server_mutex);
+  size_t counter = 0;
+  for(int i = 0; i < MAX_CONNECTIONS; i++){
+    if (server_ctx.server_clients_occupied[i] == true){
+      id_list[counter] = server_ctx.clients_id[i];
+      counter++;
+    }
+  }
+  pthread_mutex_unlock(&server_ctx.server_mutex);
+  return counter;
+}

@@ -2,12 +2,12 @@
 #include <string.h>
 
 struct message {
-  char *message;
+  void *message;
   size_t size; // In bytes
 };
 
 // allocates memory; needs to be freed later
-int create_message(message_t **msg, const char *buffer, size_t buffer_size) {
+int create_message(message_t **msg, const void *buffer, size_t buffer_size) {
   if (buffer == NULL) {
     return -1;
   }
@@ -36,5 +36,5 @@ int free_message(message_t *msg) {
   return 0;
 }
 
-const char *message_data(const message_t *msg) { return msg->message; }
+const void *message_data(const message_t *msg) { return msg->message; }
 size_t message_size(const message_t *msg) { return msg->size; }

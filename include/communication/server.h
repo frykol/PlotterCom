@@ -7,3 +7,4 @@ int init_server();
 int stop_server();
 message_queue_t *get_client_message_queue(int client_id);
 void send_client_message(int client_id, const char *message, size_t size);
+size_t get_active_connections_list(size_t* id_list);
