@@ -10,7 +10,7 @@ PORT = 8080
 
 def random_string(length):
     chars = string.ascii_letters + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
+    return "".join(random.choice(chars) for _ in range(length))
 
 
 async def send_message(writer, message):
@@ -67,7 +67,15 @@ connections = [
         "actions": {
             "send_count": 5,
             "delay_ms": 10,
-            "disconnect": True,
+            "disconnect": False,
+        },
+    },
+    {
+        "name": "client-2",
+        "actions": {
+            "send_count": 20,
+            "delay_ms": 10,
+            "disconnect": False,
         },
     },
 ]
@@ -75,10 +83,7 @@ connections = [
 
 async def main():
     await asyncio.gather(
-        *(connection(
-            conn["name"],
-            conn["actions"]
-        ) for conn in connections)
+        *(connection(conn["name"], conn["actions"]) for conn in connections)
     )
 
 

@@ -33,14 +33,18 @@ void test_shell() {
       if (!strcmp(tokens[0], "q")) {
         break;
       }
-      if (!strcmp(tokens[0], "LIST")){
+      if (!strcmp(tokens[0], "LIST")) {
         size_t client_id[10];
         size_t active_ids = get_active_connections_list(client_id);
         printf("AKTYWNI KLIENCI: %zu\n", active_ids);
         printf("[ ");
-        for(int i = 0; i < active_ids; i++){
-          printf(", %zu", client_id[i]);
+        for (int i = 0; i < active_ids; i++) {
+          printf("%zu", client_id[i]);
+          if (i != active_ids - 1) {
+            printf(", ");
+          }
         }
+        printf(" ]\n");
       }
     }
 
@@ -57,7 +61,7 @@ void test_shell() {
         printf("CLIENT MESSAGES\n");
         message_t *message;
         while (!message_queue_try_pop(msg, &message)) {
-          const char *data = (char*)message_data(message);
+          const char *data = (char *)message_data(message);
           printf("%s\n", data);
           free_message(message);
         }
