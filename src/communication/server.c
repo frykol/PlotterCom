@@ -153,6 +153,12 @@ void *server_listen(void *arg) {
     client_ctx->shutdown = &ctx->shutdown;
     pthread_mutex_init(&client_ctx->client_mutex, NULL);
 
+    pthread_mutex_lock(&ctx->server_mutex);
+    ctx->active_clients++;
+    ctx->server_clients_occupied[free_index] = true;
+    ctx->clients_contexts[free_index] = client_ctx;
+    pthread_mutex_unlock(&ctx->server_mutex);
+
     pthread_t client_thread;
     int client_thread_res = pthread_create(
         &client_thread, NULL, &client_handle_connection, (void *)client_ctx);
@@ -169,11 +175,6 @@ void *server_listen(void *arg) {
       free(client_ctx);
       continue;
     }
-    pthread_mutex_lock(&ctx->server_mutex);
-    ctx->active_clients++;
-    ctx->server_clients_occupied[free_index] = true;
-    pthread_mutex_unlock(&ctx->server_mutex);
-    ctx->clients_contexts[free_index] = client_ctx;
 
     pthread_detach(client_thread);
   }

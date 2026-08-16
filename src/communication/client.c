@@ -3,21 +3,29 @@
 #include <arpa/inet.h>
 #include <endian.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <inttypes.h>
 
 #include "communication/message.h"
 #include "communication/message_queue.h"
 
 #define MESSAGE_MAX_CHUNK 4096
 #define HEADER_MESSAGE_SIZE 8
+
+typedef struct {
+  void *buffer;
+  size_t *buffer_size;
+  int payload_size;
+  uint64_t *header_message_size;
+} payload_context_t;
 
 bool is_client_connected(int result) {
   if (result == 0) {
@@ -36,50 +44,105 @@ bool is_client_connected(int result) {
   return true;
 }
 
-void get_header_message_size(const void* buffer, size_t* buffer_size, uint64_t* header_message_size){
-  if (*header_message_size != 0){
-    return;
+void send_messages(client_context_t *client_ctx) {
+  message_t *server_message;
+  while (!message_queue_try_pop(client_ctx->server_message_queue,
+                                &server_message)) {
+    const char *data = (char *)message_data(server_message);
+    size_t data_len = message_size(server_message);
+    int send_result = 0;
+    while (send_result != data_len) {
+      // TODO: Make counter of failed send messages; For example 10 drops the
+      // connection
+      int send_result_chunk =
+          send(client_ctx->client_fd, (void *)&data[send_result],
+               data_len - send_result, 0);
+      if (send_result_chunk == -1) {
+        printf("Error on send from client %zu\n", client_ctx->client_id);
+        continue;
+      }
+      send_result += send_result_chunk;
+      if (send_result != data_len) {
+        printf("Client [%zu] bytes send mismatch; should send %zu, send: %d\n",
+               client_ctx->client_id, data_len, send_result);
+      }
+    }
+    free_message(server_message);
   }
-
-  if (*buffer_size < HEADER_MESSAGE_SIZE){
-    return;
-  }
-
-  memcpy(header_message_size, buffer, sizeof(uint64_t));
-  *header_message_size = be64toh(*header_message_size); 
 }
-void save_message(client_context_t *client_ctx, int result, char *buffer,
-                  size_t *buffer_size, uint64_t* header_message_size) {
+
+void get_header_message_size(payload_context_t *payload_context) {
+  if (*payload_context->header_message_size != 0) {
+    return;
+  }
+
+  if (*payload_context->buffer_size < HEADER_MESSAGE_SIZE) {
+    return;
+  }
+
+  memcpy(payload_context->header_message_size, payload_context->buffer,
+         sizeof(uint64_t));
+  *payload_context->header_message_size =
+      be64toh(*payload_context->header_message_size);
+}
+
+void save_message(client_context_t *client_ctx,
+                  payload_context_t *payload_context, bool *try_parse_message) {
 
   const size_t offset = HEADER_MESSAGE_SIZE;
 
-  if(*buffer_size < HEADER_MESSAGE_SIZE){
+  if (*payload_context->buffer_size < HEADER_MESSAGE_SIZE) {
     return;
   }
-  size_t characters_len = result / sizeof(char);
-  printf("Arrived: %d bytes -> %zu characters\n", result, characters_len);
+  size_t characters_len = payload_context->payload_size / sizeof(char);
+  printf("Arrived: %d bytes -> %zu characters\n", payload_context->payload_size,
+         characters_len);
 
-  if (*buffer_size >= *header_message_size + offset) {
-    printf("Data avalible, characters len:%zu\n", characters_len);
-    printf("%s\n\n", buffer);
+  if (*payload_context->buffer_size <
+      *payload_context->header_message_size + offset) {
+    return;
+  }
 
+  printf("Data avalible, characters len:%zu\n", characters_len);
+  // TODO: Delete this; printf only for testing in specific enviroment
+  printf("%.*s\n\n", payload_context->buffer_size,
+         (char *)payload_context->buffer);
 
-    message_t *message;
-    int message_result =
-        create_message(&message, (void*)buffer + offset, *buffer_size-offset);
+  message_t *message;
+  int message_result =
+      create_message(&message, (char *)payload_context->buffer + offset,
+                     *payload_context->header_message_size);
 
-    if (message_result != 0) {
-      printf("Error creating message\n");
-    }
+  if (message_result != 0) {
+    printf("Error creating message\n");
+    return;
+  }
 
-    *buffer_size = 0;
-    *header_message_size = 0;
-    message_queue_add(client_ctx->client_message_queue, message);
+  size_t remaining_len = *payload_context->buffer_size -
+                         (*payload_context->header_message_size + offset);
+
+  if (remaining_len > 0) {
+    memmove((char *)payload_context->buffer,
+            (char *)&payload_context
+                ->buffer[*payload_context->header_message_size + offset],
+            remaining_len);
+    *payload_context->buffer_size = remaining_len;
+    *try_parse_message = true;
+  } else {
+    *payload_context->buffer_size = 0;
+  }
+
+  *payload_context->header_message_size = 0;
+  int message_queue_result =
+      message_queue_add(client_ctx->client_message_queue, message);
+  if (message_queue_result == -1) {
+    // TODO: Send client message warning about full server message queue
+    free_message(message);
   }
 }
 
+// TODO: Make system that warns client about error's occcured
 void *client_handle_connection(void *client_context) {
-  printf("CONNECTED\n");
   client_context_t *client_ctx = (client_context_t *)client_context;
 
   printf("New Connection\nConnected on free id: %zu\n", client_ctx->client_id);
@@ -92,6 +155,7 @@ void *client_handle_connection(void *client_context) {
   size_t buffer_size = 0;
 
   uint64_t header_message_size = 0;
+  bool try_parse_message = true;
   while (1) {
     pthread_mutex_lock(client_ctx->mutex);
     bool shutdown = *client_ctx->shutdown;
@@ -100,17 +164,12 @@ void *client_handle_connection(void *client_context) {
       break;
     }
 
-    message_t *server_message;
-    while (!message_queue_try_pop(client_ctx->server_message_queue,
-                                  &server_message)) {
-      const char *data = (char*)message_data(server_message);
-      size_t data_len = message_size(server_message);
-      send(client_ctx->client_fd, (void *)data, data_len, 0);
-      free_message(server_message);
-    }
+    send_messages(client_ctx);
 
+    // TODO: Check errno.
     int pool_result = poll(&fd, 1, 100);
     if (pool_result == 0) {
+      header_message_size = 0;
       continue;
     }
 
@@ -122,15 +181,36 @@ void *client_handle_connection(void *client_context) {
       int result =
           recv(client_ctx->client_fd, &test_buffer[buffer_size],
                MESSAGE_MAX_CHUNK - (buffer_size * sizeof(char)) - 1, 0);
-      buffer_size += result;
+
+      if (result > 0) {
+        buffer_size += result;
+      }
+
+      payload_context_t payload_context;
+      payload_context.buffer = test_buffer;
+      payload_context.buffer_size = &buffer_size;
+      payload_context.payload_size = result;
+      payload_context.header_message_size = &header_message_size;
 
       if (!is_client_connected(result)) {
         break;
       }
 
       if (result > 0) {
-        get_header_message_size(test_buffer, &buffer_size,  &header_message_size);
-        save_message(client_ctx, result, test_buffer, &buffer_size, &header_message_size);
+        try_parse_message = true;
+        while (try_parse_message) {
+          try_parse_message = false;
+          get_header_message_size(&payload_context);
+
+          if (header_message_size + HEADER_MESSAGE_SIZE > MESSAGE_MAX_CHUNK) {
+            printf("[Client %zu]: Header to large: %" PRIu64 ", max: %d\n",
+                   client_ctx->client_id, header_message_size,
+                   MESSAGE_MAX_CHUNK);
+            // TODO: Send message to client warning about ignored message
+            break;
+          }
+          save_message(client_ctx, &payload_context, &try_parse_message);
+        }
       }
     }
     if (fd.revents & (POLLHUP)) {
